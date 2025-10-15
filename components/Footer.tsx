@@ -1,4 +1,3 @@
-
 import React from 'react';
 import MicrophoneIcon from './icons/MicrophoneIcon';
 
@@ -6,16 +5,20 @@ interface FooterProps {
   isRecording: boolean;
   statusMessage: string;
   onToggleRecording: () => void;
+  disabled?: boolean;
 }
 
-const Footer: React.FC<FooterProps> = ({ isRecording, statusMessage, onToggleRecording }) => {
+const Footer: React.FC<FooterProps> = ({ isRecording, statusMessage, onToggleRecording, disabled }) => {
   return (
     <footer className="p-4 border-t border-gray-700 flex flex-col items-center justify-center gap-3">
       <button
         onClick={onToggleRecording}
-        className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 transform scale-100 hover:scale-105 active:scale-95
-          ${isRecording ? 'bg-red-500' : 'bg-blue-600'}`
-        }
+        disabled={disabled}
+        className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 transform 
+          ${isRecording ? 'bg-red-500' : 'bg-blue-600'}
+          ${!disabled ? 'hover:scale-105 active:scale-95 scale-100' : ''}
+          disabled:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed
+        `}
         aria-label={isRecording ? 'Dừng ghi âm' : 'Bắt đầu ghi âm'}
       >
         {isRecording && (

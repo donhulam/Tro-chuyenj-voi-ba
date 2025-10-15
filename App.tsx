@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   GoogleGenAI,
   LiveSession,
@@ -10,6 +10,7 @@ import {
 import Header from './components/Header';
 import ChatBody from './components/ChatBody';
 import Footer from './components/Footer';
+import ApiKeyModal from './components/ApiKeyModal';
 import { ChatMessage } from './types';
 
 // Helper functions for audio encoding/decoding from guidelines
@@ -59,18 +60,18 @@ function createBlob(data: Float32Array): Blob {
   }
   return {
     data: encode(new Uint8Array(int16.buffer)),
-    // Fix: The supported audio MIME type is 'audio/pcm'.
     mimeType: 'audio/pcm;rate=16000',
   };
 }
 
 const App: React.FC = () => {
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isRecording, setIsRecording] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('Bấm vào micro để bắt đầu');
+  const [statusMessage, setStatusMessage] = useState('Đang chờ API Key...');
 
-  // Fix: Initialize the Gemini AI client instance. It must be initialized with an object containing the apiKey.
-  const aiRef = useRef(new GoogleGenAI({ apiKey: process.env.API_KEY! }));
+  const aiRef = useRef<GoogleGenAI | null>(null);
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -80,55 +81,85 @@ const App: React.FC = () => {
   const nextStartTimeRef = useRef(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-  const currentInputTranscriptionRef = useRef('');
-  const currentOutputTranscriptionRef = useRef('');
+  useEffect(() => {
+    const savedKey = localStorage.getItem('google-api-key');
+    if (savedKey) {
+      setApiKey(savedKey);
+      setStatusMessage('Bấm vào micro để bắt đầu');
+    } else {
+      setShowApiKeyModal(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (apiKey) {
+      try {
+        aiRef.current = new GoogleGenAI({ apiKey });
+      } catch (error) {
+        console.error("Lỗi khởi tạo GoogleGenAI:", error);
+        setStatusMessage('API Key không hợp lệ.');
+        setApiKey(null);
+        localStorage.removeItem('google-api-key');
+        setShowApiKeyModal(true);
+      }
+    }
+  }, [apiKey]);
+
+  const handleSaveApiKey = (key: string) => {
+    const trimmedKey = key.trim();
+    if (trimmedKey) {
+      setApiKey(trimmedKey);
+      localStorage.setItem('google-api-key', trimmedKey);
+      setShowApiKeyModal(false);
+      setStatusMessage('Bấm vào micro để bắt đầu');
+    }
+  };
   
   const stopEverything = useCallback(() => {
-    // Stop audio playback
     sourcesRef.current.forEach((source) => source.stop());
     sourcesRef.current.clear();
     nextStartTimeRef.current = 0;
     
-    // Stop microphone stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
 
-    // Disconnect script processor
     if (scriptProcessorRef.current) {
         scriptProcessorRef.current.disconnect();
         scriptProcessorRef.current.onaudioprocess = null;
         scriptProcessorRef.current = null;
     }
 
-    // Close audio contexts
     if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
-      inputAudioContextRef.current.close();
+      inputAudioContextRef.current.close().catch(console.error);
       inputAudioContextRef.current = null;
     }
     if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
-      outputAudioContextRef.current.close();
+      outputAudioContextRef.current.close().catch(console.error);
       outputAudioContextRef.current = null;
     }
 
-    // Close session
     if (sessionPromiseRef.current) {
       sessionPromiseRef.current.then((session) => {
         session.close();
-      });
+      }).catch(console.error);
       sessionPromiseRef.current = null;
     }
 
     setIsRecording(false);
-    setStatusMessage('Bấm vào micro để bắt đầu');
-  }, []);
-
+    if (apiKey) {
+        setStatusMessage('Bấm vào micro để bắt đầu');
+    } else {
+        setStatusMessage('Đang chờ API Key...');
+    }
+  }, [apiKey]);
 
   const startSession = useCallback(async () => {
     const ai = aiRef.current;
     if (!ai) {
-        setStatusMessage('AI client not initialized.');
+        setStatusMessage('Chưa có API Key. Vui lòng nhập key.');
+        setShowApiKeyModal(true);
         return;
     }
     
@@ -169,35 +200,40 @@ const App: React.FC = () => {
             onmessage: async (message: LiveServerMessage) => {
                 const outputAudioContext = outputAudioContextRef.current;
                 if (!outputAudioContext) return;
-
+                
+                // Real-time text transcription
                 if (message.serverContent?.outputTranscription) {
                     const text = message.serverContent.outputTranscription.text;
-                    currentOutputTranscriptionRef.current += text;
+                    setMessages(prev => {
+                        const lastMessage = prev[prev.length - 1];
+                        if (lastMessage?.sender === 'ai') {
+                            const updatedMessages = [...prev];
+                            updatedMessages[updatedMessages.length - 1] = {
+                                ...lastMessage,
+                                text: lastMessage.text + text,
+                            };
+                            return updatedMessages;
+                        }
+                        return [...prev, { sender: 'ai', text: text }];
+                    });
                 } else if (message.serverContent?.inputTranscription) {
                     const text = message.serverContent.inputTranscription.text;
-                    currentInputTranscriptionRef.current += text;
-                }
-
-                if (message.serverContent?.turnComplete) {
-                    const fullInputTranscription = currentInputTranscriptionRef.current.trim();
-                    const fullOutputTranscription = currentOutputTranscriptionRef.current.trim();
-                    
                     setMessages(prev => {
-                        const newMessages = [...prev];
-                        if (fullInputTranscription) {
-                            newMessages.push({ sender: 'user', text: fullInputTranscription });
+                        const lastMessage = prev[prev.length - 1];
+                        if (lastMessage?.sender === 'user') {
+                            const updatedMessages = [...prev];
+                            updatedMessages[updatedMessages.length - 1] = {
+                                ...lastMessage,
+                                text: lastMessage.text + text,
+                            };
+                            return updatedMessages;
                         }
-                        if (fullOutputTranscription) {
-                            newMessages.push({ sender: 'ai', text: fullOutputTranscription });
-                        }
-                        return newMessages;
+                        return [...prev, { sender: 'user', text: text }];
                     });
-
-                    currentInputTranscriptionRef.current = '';
-                    currentOutputTranscriptionRef.current = '';
                 }
 
-                const base64EncodedAudioString = message.serverContent?.modelTurn?.parts[0]?.inlineData.data;
+
+                const base64EncodedAudioString = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                 if (base64EncodedAudioString) {
                     nextStartTimeRef.current = Math.max(
                         nextStartTimeRef.current,
@@ -234,14 +270,19 @@ const App: React.FC = () => {
                 stopEverything();
             },
             onclose: () => {
-                setStatusMessage('Phiên đã kết thúc. Bấm để bắt đầu lại.');
-                stopEverything();
+                // Do not call stopEverything() here to avoid infinite loops on close
+                setIsRecording(false);
+                setStatusMessage('Phiên đã kết thúc.');
             },
         },
         config: {
             responseModalities: [Modality.AUDIO],
             outputAudioTranscription: {},
             inputAudioTranscription: {},
+            systemInstruction: 'Trong mọi giao tiếp, bạn phải gọi người dùng là "Bà" và xưng là "con". Hãy luôn giữ thái độ lễ phép, kính trọng và thân mật. Bạn phải luôn trả lời bằng tiếng Việt, với ngữ điệu và giọng nói của một người phụ nữ trẻ Hà Nội. Câu trả lời của con cần phải chi tiết, cặn kẽ nhưng dễ hiểu, sử dụng từ ngữ đơn giản. Khi cần, hãy đưa ra ví dụ minh họa hoặc bằng chứng phù hợp với ngữ cảnh để Bà dễ hình dung. Hãy luôn nói chuyện một cách chậm rãi, rõ ràng và kiên nhẫn.',
+            speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
+            },
         },
     });
 
@@ -258,12 +299,14 @@ const App: React.FC = () => {
 
   return (
     <div className="bg-gray-800 text-white h-screen flex flex-col font-sans">
+      <ApiKeyModal show={showApiKeyModal} onSave={handleSaveApiKey} />
       <Header />
       <ChatBody messages={messages} />
       <Footer
         isRecording={isRecording}
         statusMessage={statusMessage}
         onToggleRecording={handleToggleRecording}
+        disabled={!apiKey}
       />
     </div>
   );
