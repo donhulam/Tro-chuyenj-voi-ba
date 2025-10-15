@@ -1,0 +1,7 @@
+{
+  "name": "TRÒ CHUYỆN HÀNG NGÀY",
+  "description": "Một ứng dụng trò chuyện bằng giọng nói, cho phép người dùng tương tác với AI một cách tự nhiên và liền mạch.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
